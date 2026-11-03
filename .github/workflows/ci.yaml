@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Build with the patches applied
+        run: docker build --platform linux/amd64 -t hermes-agent-patched:ci .
+
+      - name: Import every module the patches touch
+        run: |
+          modules=$(grep -h '^+++ b/' patches/*.patch | sed 's|^+++ b/||' | grep '\.py$' | grep -v '^tests/' | sed 's|\.py$||; s|/|.|g' | sort -u)
+          # shellcheck disable=SC2086 # one argument per module
+          docker run --rm --entrypoint /opt/hermes/.venv/bin/python -w /opt/hermes hermes-agent-patched:ci \
+            -c 'import importlib, sys; [print("imported", importlib.import_module(m).__name__) for m in sys.argv[1:]]' $modules

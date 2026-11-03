@@ -1,0 +1,254 @@
+Upstream: https://github.com/NousResearch/hermes-agent/pull/143213
+
+diff --git a/gateway/platforms/api_server.py b/gateway/platforms/api_server.py
+index f8160def3de65..fb601075af9b9 100644
+--- a/gateway/platforms/api_server.py
++++ b/gateway/platforms/api_server.py
+@@ -3771,7 +3771,10 @@ async def _handle_session_model_lock(self, request: web.Request) -> web.Response
+ 
+     _JOB_ID_RE = re.compile(r"[a-f0-9]{12}")
+     # Update whitelist — prevents clients injecting arbitrary keys.
+-    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
++    _UPDATE_ALLOWED_FIELDS = {
++        "name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled",
++        "script", "no_agent", "workdir",
++    }
+     _MAX_NAME_LENGTH = 200
+     _MAX_PROMPT_LENGTH = 5000
+ 
+@@ -3811,6 +3814,16 @@ def _validate_cron_prompt(self, prompt: str) -> Optional[web.Response]:
+                 return web.json_response({"error": scan_error}, status=400)
+         return None
+ 
++    @staticmethod
++    def _validate_cron_script_fields(fields: dict) -> Optional[web.Response]:
++        """Script-job field types shared by create/update; cron.jobs validates the combination."""
++        if not isinstance(fields.get("no_agent", False), bool):
++            return web.json_response({"error": "no_agent must be a boolean"}, status=400)
++        for key in ("script", "workdir"):
++            if not isinstance(fields.get(key), (str, type(None))):
++                return web.json_response({"error": f"{key} must be a string"}, status=400)
++        return None
++
+     def _job_response(self, fn, job_id: str, *, notify: bool) -> web.Response:
+         """Run ``fn(job_id)``: 404 when falsy, else ``{"job": ...}``; exceptions -> 500."""
+         try:
+@@ -3861,13 +3874,20 @@ async def _handle_create_job(self, request: web.Request) -> web.Response:
+                 return prompt_err
+             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
+                 return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
++            script_err = self._validate_cron_script_fields(body)
++            if script_err:
++                return script_err
+             kwargs = {
+                 "prompt": prompt, "schedule": schedule, "name": name,
+                 "deliver": body.get("deliver", "local"),
+                 "origin": self._cron_origin_from_request(request)}
+-            for key in ("paused", "paused_reason"):
++            # Script jobs as `hermes cron create --script [--no-agent]` makes them; create_job
++            # validates the combination (a no_agent job needs its script).
++            for key in ("paused", "paused_reason", "script", "workdir"):
+                 if key in body:
+                     kwargs[key] = body[key]
++            if body.get("no_agent"):
++                kwargs["no_agent"] = True
+             if skills:
+                 kwargs["skills"] = skills
+             if repeat is not None:
+@@ -3901,6 +3921,9 @@ async def _handle_update_job(self, request: web.Request) -> web.Response:
+                 prompt_err = self._validate_cron_prompt(sanitized["prompt"])
+                 if prompt_err:
+                     return prompt_err
++            script_err = self._validate_cron_script_fields(sanitized)
++            if script_err:
++                return script_err
+         except Exception as e:
+             return self._cron_error_response(e)
+         return self._job_response(lambda jid: _cron_update(jid, sanitized), job_id, notify=True)
+diff --git a/tests/gateway/test_api_server_jobs.py b/tests/gateway/test_api_server_jobs.py
+index c9d483075ce13..f1be18a4f0b61 100644
+--- a/tests/gateway/test_api_server_jobs.py
++++ b/tests/gateway/test_api_server_jobs.py
+@@ -140,6 +140,95 @@ async def test_create_job(self, adapter):
+                 assert call_kwargs["origin"]["user_agent"] == "cron-client"
+ 
+ 
++    @pytest.mark.asyncio
++    async def test_create_job_passes_script_fields_through(self, adapter):
++        """POST /api/jobs with script, no_agent and workdir reaches create_job with them."""
++        app = _create_app(adapter)
++        mock_create = MagicMock(return_value=SAMPLE_JOB)
++        async with TestClient(TestServer(app)) as cli:
++            with patch(
++                f"{_MOD}._CRON_AVAILABLE", True
++            ), patch(
++                f"{_MOD}._cron_create", mock_create
++            ):
++                resp = await cli.post("/api/jobs", json={
++                    "name": "digest",
++                    "schedule": "0 18 * * 0",
++                    "script": "digest.py",
++                    "no_agent": True,
++                    "workdir": "/tmp/digest",
++                })
++                assert resp.status == 200
++                call_kwargs = mock_create.call_args[1]
++                assert call_kwargs["script"] == "digest.py"
++                assert call_kwargs["no_agent"] is True
++                assert call_kwargs["workdir"] == "/tmp/digest"
++                assert call_kwargs["prompt"] == ""
++
++    @pytest.mark.asyncio
++    async def test_create_job_without_script_fields_passes_none_of_them(self, adapter):
++        """An agent job's create call carries no script, no_agent or workdir."""
++        app = _create_app(adapter)
++        mock_create = MagicMock(return_value=SAMPLE_JOB)
++        async with TestClient(TestServer(app)) as cli:
++            with patch(
++                f"{_MOD}._CRON_AVAILABLE", True
++            ), patch(
++                f"{_MOD}._cron_create", mock_create
++            ):
++                resp = await cli.post("/api/jobs", json={
++                    "name": "test-job",
++                    "schedule": "*/5 * * * *",
++                    "prompt": "do something",
++                })
++                assert resp.status == 200
++                call_kwargs = mock_create.call_args[1]
++                assert not {"script", "no_agent", "workdir"} & set(call_kwargs)
++
++    @pytest.mark.asyncio
++    async def test_create_job_rejects_non_boolean_no_agent(self, adapter):
++        """POST /api/jobs with no_agent as a string is a 400, like a non-boolean paused."""
++        app = _create_app(adapter)
++        mock_create = MagicMock(return_value=SAMPLE_JOB)
++        async with TestClient(TestServer(app)) as cli:
++            with patch(
++                f"{_MOD}._CRON_AVAILABLE", True
++            ), patch(
++                f"{_MOD}._cron_create", mock_create
++            ):
++                resp = await cli.post("/api/jobs", json={
++                    "name": "digest",
++                    "schedule": "0 18 * * 0",
++                    "script": "digest.py",
++                    "no_agent": "yes",
++                })
++                assert resp.status == 400
++                data = await resp.json()
++                assert "no_agent" in data["error"]
++                mock_create.assert_not_called()
++
++    @pytest.mark.asyncio
++    async def test_create_job_rejects_non_string_script(self, adapter):
++        """POST /api/jobs with a non-string script is a 400 instead of a silently dropped script."""
++        app = _create_app(adapter)
++        mock_create = MagicMock(return_value=SAMPLE_JOB)
++        async with TestClient(TestServer(app)) as cli:
++            with patch(
++                f"{_MOD}._CRON_AVAILABLE", True
++            ), patch(
++                f"{_MOD}._cron_create", mock_create
++            ):
++                resp = await cli.post("/api/jobs", json={
++                    "name": "digest",
++                    "schedule": "0 18 * * 0",
++                    "prompt": "summarize",
++                    "script": ["digest.py"],
++                })
++                assert resp.status == 400
++                data = await resp.json()
++                assert "script" in data["error"]
++                mock_create.assert_not_called()
++
+     @pytest.mark.asyncio
+     async def test_create_job_reports_saved_but_unregistered(self, adapter):
+         """A failed external registration is a structured partial failure."""
+@@ -241,6 +330,64 @@ async def test_update_job_rejects_unknown_fields(self, adapter):
+                 assert "evil_field" not in sanitized
+                 assert "__proto__" not in sanitized
+ 
++    @pytest.mark.asyncio
++    async def test_update_job_passes_script_fields_through(self, adapter):
++        """PATCH /api/jobs/{id} — script, no_agent and workdir are updatable fields."""
++        app = _create_app(adapter)
++        updated_job = {**SAMPLE_JOB, "script": "digest.py", "no_agent": True}
++        mock_update = MagicMock(return_value=updated_job)
++        async with TestClient(TestServer(app)) as cli:
++            with patch(
++                f"{_MOD}._CRON_AVAILABLE", True
++            ), patch(
++                f"{_MOD}._cron_update", mock_update
++            ):
++                resp = await cli.patch(
++                    f"/api/jobs/{VALID_JOB_ID}",
++                    json={"script": "digest.py", "no_agent": True, "workdir": "/tmp/digest"},
++                )
++                assert resp.status == 200
++                sanitized = mock_update.call_args[0][1]
++                assert sanitized == {
++                    "script": "digest.py", "no_agent": True, "workdir": "/tmp/digest",
++                }
++
++    @pytest.mark.asyncio
++    async def test_update_job_rejects_non_boolean_no_agent(self, adapter):
++        """PATCH refuses a string no_agent like create; stored, "false" would read as true."""
++        app = _create_app(adapter)
++        mock_update = MagicMock(return_value=SAMPLE_JOB)
++        async with TestClient(TestServer(app)) as cli:
++            with patch(
++                f"{_MOD}._CRON_AVAILABLE", True
++            ), patch(
++                f"{_MOD}._cron_update", mock_update
++            ):
++                resp = await cli.patch(
++                    f"/api/jobs/{VALID_JOB_ID}", json={"no_agent": "false"})
++                assert resp.status == 400
++                data = await resp.json()
++                assert "no_agent" in data["error"]
++                mock_update.assert_not_called()
++
++    @pytest.mark.asyncio
++    async def test_update_job_rejects_non_string_script(self, adapter):
++        """PATCH refuses a non-string script like create; update_job stores it unnormalized."""
++        app = _create_app(adapter)
++        mock_update = MagicMock(return_value=SAMPLE_JOB)
++        async with TestClient(TestServer(app)) as cli:
++            with patch(
++                f"{_MOD}._CRON_AVAILABLE", True
++            ), patch(
++                f"{_MOD}._cron_update", mock_update
++            ):
++                resp = await cli.patch(
++                    f"/api/jobs/{VALID_JOB_ID}", json={"script": 42})
++                assert resp.status == 400
++                data = await resp.json()
++                assert "script" in data["error"]
++                mock_update.assert_not_called()
++
+ 
+ # ---------------------------------------------------------------------------
+ # 13. test_delete_job
+diff --git a/website/docs/user-guide/features/api-server.md b/website/docs/user-guide/features/api-server.md
+index 2d920eb64d9cb..31dfd99fc1b12 100644
+--- a/website/docs/user-guide/features/api-server.md
++++ b/website/docs/user-guide/features/api-server.md
+@@ -763,7 +763,7 @@ List all scheduled jobs.
+ 
+ ### POST /api/jobs
+ 
+-Create a new scheduled job. Body accepts the same shape as `hermes cron` — prompt, schedule, skills, provider override, delivery target.
++Create a new scheduled job. Body accepts the same shape as `hermes cron` — prompt, schedule, skills, provider override, delivery target. A script job takes `script` (a path under `~/.hermes/scripts/`), optionally `workdir`, and `no_agent: true` when the script's stdout is the job's output and no model runs.
+ 
+ ### GET /api/jobs/\{job_id\}
+ 
+@@ -771,7 +771,7 @@ Fetch a single job's definition and last-run state.
+ 
+ ### PATCH /api/jobs/\{job_id\}
+ 
+-Update fields on an existing job (prompt, schedule, etc.). Partial updates are merged.
++Update fields on an existing job (prompt, schedule, script, no_agent, etc.). Partial updates are merged.
+ 
+ ### DELETE /api/jobs/\{job_id\}
+ 

@@ -1,0 +1,88 @@
+Upstream: https://github.com/NousResearch/hermes-agent/pull/143473
+
+diff --git a/hermes_cli/config.py b/hermes_cli/config.py
+index e069959754ae6..ca734f8773a8d 100644
+--- a/hermes_cli/config.py
++++ b/hermes_cli/config.py
+@@ -1527,13 +1527,28 @@ def _env_ref_lookup(name: str) -> Optional[str]:
+     through ``agent.secret_scope.get_secret`` so the ref resolves against *that* profile's ``.env``: under
+     multiplexing a miss is a miss, never another profile's ``os.environ`` value (#84079 — every profile
+     "had" the default profile's ``${MATRIX_ACCESS_TOKEN}`` and fanned out). Same policy as
+-    ``gateway.config._getenv`` and ``get_env_value``.
++    ``gateway.config._getenv`` and ``get_env_value``. A HERMES_HOME override without a scope takes
++    the value that home's scope holds (``build_profile_secret_scope``: managed ``.env`` last, no
++    globals) and falls back to ``os.environ`` for the rest, as before.
+     """
+     try:
+         from agent.secret_scope import current_secret_scope, get_secret as _get_secret
+     except Exception:
+         return os.environ.get(name)
+     if current_secret_scope() is None:
++        from hermes_constants import get_hermes_home_override
++        override = get_hermes_home_override()
++        if override is None:
++            return os.environ.get(name)
++        # A home override without a scope — the log listener formatting a routed record under
++        # that profile's home, a scheduler reading a served profile's settings — takes the value
++        # that profile's scope holds (its .env and sources, managed .env last). Globals, and names
++        # the profile does not hold (refs of the launch config's layers), still come from environ.
++        from agent.secret_scope import _is_global_env, build_profile_secret_scope
++        if not _is_global_env(name):
++            value = build_profile_secret_scope(Path(override)).get(name)
++            if value is not None:
++                return value
+         return os.environ.get(name)
+     return _get_secret(name)
+ 
+diff --git a/tests/hermes_cli/test_config_env_expansion.py b/tests/hermes_cli/test_config_env_expansion.py
+index e7af43c8658f5..6be883b0d6fbd 100644
+--- a/tests/hermes_cli/test_config_env_expansion.py
++++ b/tests/hermes_cli/test_config_env_expansion.py
+@@ -141,3 +141,47 @@ def test_scoped_ref_never_reads_another_profiles_environ(self, monkeypatch):
+             ss.set_multiplex_active(was_active)
+         # Unscoped (default profile / single-profile CLI): legacy environ read.
+         assert _expand_env_vars("${MATRIX_ACCESS_TOKEN}") == "default-token"
++
++    def test_override_home_without_scope_takes_that_homes_scope_values(self, tmp_path, monkeypatch):
++        """A record routed to a served profile's log is formatted under that profile's HERMES_HOME
++        override with no secret scope bound. A ref its scope holds answers as the scope would: a key
++        only the profile holds resolves, the administrator-managed .env beats the profile's value,
++        and a global name such as PATH still comes from the process env. A name the profile does not
++        hold falls back to the process env, as it did without the override."""
++        from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
++        from hermes_cli import managed_scope
++        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
++
++        home = tmp_path / "profile"
++        home.mkdir()
++        (home / ".env").write_text(
++            "PROFILE_ONLY_KEY=from-profile\nMANAGED_KEY=from-profile\nPATH=/from/profile\n"
++        )
++        managed = tmp_path / "managed"
++        managed.mkdir()
++        (managed / ".env").write_text("MANAGED_KEY=from-managed\n")
++        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
++        managed_scope.invalidate_managed_cache()
++        monkeypatch.delenv("PROFILE_ONLY_KEY", raising=False)
++        monkeypatch.setenv("PATH", "/from/environ")
++        monkeypatch.setenv("LAUNCH_ONLY_KEY", "from-environ")
++        refs = ["${env:PROFILE_ONLY_KEY}", "${env:MANAGED_KEY}", "${env:PATH}", "${env:NOWHERE_KEY}"]
++
++        token = set_hermes_home_override(str(home))
++        try:
++            unscoped = [_expand_env_vars(ref) for ref in refs]
++            launch_only = _expand_env_vars("${env:LAUNCH_ONLY_KEY}")
++            scope = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
++            try:
++                scoped = [_expand_env_vars(ref) for ref in refs]
++            finally:
++                reset_secret_scope(scope)
++        finally:
++            reset_hermes_home_override(token)
++            managed_scope.invalidate_managed_cache()
++
++        assert unscoped == scoped
++        assert unscoped == ["from-profile", "from-managed", "/from/environ", "${env:NOWHERE_KEY}"]
++        assert launch_only == "from-environ"
++        # Without the override the launch environment answers again.
++        assert _expand_env_vars("${env:PROFILE_ONLY_KEY}") == "${env:PROFILE_ONLY_KEY}"

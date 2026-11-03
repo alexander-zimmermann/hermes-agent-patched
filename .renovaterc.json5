@@ -1,0 +1,23 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>alexander-zimmermann/lares//.renovate/sidecarBase.json5"],
+  "packageRules": [
+    {
+      // A Hermes release merges itself once CI shows every patch still applies; lares reviews the bump of this image.
+      // Its old date tags (v2026.x) sort above the SemVer line and are never offered.
+      "matchManagers": ["dockerfile"],
+      "matchPackageNames": ["nousresearch/hermes-agent"],
+      "allowedVersions": "!/^v20\\d{2}\\./",
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true,
+    },
+    {
+      "matchManagers": ["pre-commit"],
+      "groupName": "pre-commit",
+    },
+  ],
+  "pre-commit": {
+    "enabled": true,
+  },
+}

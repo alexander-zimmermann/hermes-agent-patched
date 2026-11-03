@@ -1,0 +1,6 @@
+# syntax=docker/dockerfile:1.28
+FROM nousresearch/hermes-agent:v0.22.6@sha256:d27689bc6e8581ec884a7227c9101fdaebf6c853cff8859020dac14f21452b4d
+
+# Hermes runs from its source tree, so the patches go straight into /opt/hermes.
+RUN --mount=type=bind,source=.,target=/src \
+    bash /src/apply-patches.sh /src/patches /opt/hermes
