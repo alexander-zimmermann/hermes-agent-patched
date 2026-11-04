@@ -8,7 +8,7 @@ Every file in `patches/` is one open pull request in NousResearch/hermes-agent, 
 
 ## How it works
 
-The `Dockerfile` starts from one Hermes release, pinned by tag and digest. `scripts/apply-patches.sh` applies every patch to `/opt/hermes`, where Hermes runs from its source tree. The image has neither tests nor the docs site, so the hunks for `tests/` and `website/` are skipped.
+The `Dockerfile` starts from one Hermes release, pinned by tag and digest. `scripts/apply-patches.sh` applies every patch to `/opt/hermes`, where Hermes runs from its source tree. The image has neither tests nor the docs site, so the hunks for `tests/` and `website/` are skipped. So are those for `contributors/`: every one of our PRs adds the same contributor mapping, which only Hermes' CI needs.
 
 1. Renovate checks Docker Hub every hour and opens a PR for a new Hermes release.
 2. CI builds the image with the patches and imports every module they touch. If CI passes, the PR merges itself.
