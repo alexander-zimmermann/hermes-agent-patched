@@ -3,4 +3,4 @@ FROM nousresearch/hermes-agent:v0.22.7@sha256:e6d81ae52ebf6a43efa529701405509f20
 
 # Hermes runs from its source tree, so the patches go straight into /opt/hermes.
 RUN --mount=type=bind,source=.,target=/src \
-    bash /src/apply-patches.sh /src/patches /opt/hermes
+    bash /src/scripts/apply-patches.sh /src/patches /opt/hermes

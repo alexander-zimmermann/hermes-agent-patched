@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     branches: [main]
-    paths: ["Dockerfile", "apply-patches.sh", "patches/**"]
+    paths: ["Dockerfile", "scripts/**", "patches/**"]
   workflow_dispatch:
 
 permissions:
