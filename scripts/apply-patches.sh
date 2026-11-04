@@ -5,8 +5,8 @@ set -euo pipefail
 patches=$1
 tree=$2
 
-# The image ships neither tests nor the docs site, so those hunks are skipped.
-skip=(--exclude='tests/*' --exclude='website/*')
+# The image needs neither tests, the docs site, nor the contributor map (each of our PRs adds the same file).
+skip=(--exclude='tests/*' --exclude='website/*' --exclude='contributors/*')
 
 cd "$tree"
 for p in "$patches"/*.patch; do

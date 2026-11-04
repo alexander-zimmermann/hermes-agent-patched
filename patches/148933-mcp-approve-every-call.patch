@@ -1,0 +1,326 @@
+Upstream: https://github.com/NousResearch/hermes-agent/pull/148933
+
+diff --git a/contributors/emails/alexander@zimmermann.eu.com b/contributors/emails/alexander@zimmermann.eu.com
+new file mode 100644
+index 000000000000..68bb810f3eb5
+--- /dev/null
++++ b/contributors/emails/alexander@zimmermann.eu.com
+@@ -0,0 +1,2 @@
++alexander-zimmermann
++# mcp: approve_every_call asks before every write-capable call
+diff --git a/tests/tools/test_approval_gateway_wait_coalesce_race.py b/tests/tools/test_approval_gateway_wait_coalesce_race.py
+index 8c0c11aed5a2..f0df917fca2c 100644
+--- a/tests/tools/test_approval_gateway_wait_coalesce_race.py
++++ b/tests/tools/test_approval_gateway_wait_coalesce_race.py
+@@ -7,6 +7,8 @@
+ 
+ import threading
+ 
++import pytest
++
+ from tools import approval as mod
+ from tools import approval_gateway_wait as wait_mod
+ 
+@@ -203,3 +205,41 @@ def run():
+             thread.join(0.05)
+     assert (prompts, queued) == (2, 1)
+     assert [r["choice"] for r in results] == ["once"] * 3
++
++
++@pytest.mark.parametrize("choice", ["session", "always"])
++def test_broader_answer_to_a_once_only_prompt_releases_the_follower_to_ask(monkeypatch, choice):
++    """A prompt that offered only Once (an ``approve_every_call`` MCP server, an elicitation): a typed
++    ``/approve session`` or ``always`` covers the leader alone, so the follower asks for itself."""
++    from tests.waiting import wait_until
++
++    _clear()
++    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
++    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: APPROVAL_TIMEOUT)
++    notified: list[str] = []
++    follows: list[str] = []
++    real_follow = wait_mod._await_coalesced_leader
++
++    def follow(session_key, leader, payload):
++        follows.append(leader.data["request_id"])
++        return real_follow(session_key, leader, payload)
++
++    monkeypatch.setattr(wait_mod, "_await_coalesced_leader", follow)
++    once_only = {**APPROVAL, "allow_session": False, "allow_permanent": False}
++    results: list[dict] = []
++
++    def run():
++        results.append(wait_mod._await_gateway_decision(SESSION_KEY, notified.append, dict(once_only)))
++
++    threads = [threading.Thread(target=run, daemon=True) for _ in range(2)]
++    threads[0].start()
++    wait_until(lambda: len(notified) == 1, what="the leader's prompt")
++    threads[1].start()
++    wait_until(lambda: len(follows) == 1, what="the follower waiting on the leader")
++
++    assert mod.resolve_gateway_approval(SESSION_KEY, choice) == 1
++    wait_until(lambda: len(notified) == 2, what="the follower's own prompt")
++    assert mod.resolve_gateway_approval(SESSION_KEY, "once") == 1
++    for thread in threads:
++        thread.join(10)
++    assert sorted(r["choice"] for r in results) == sorted([choice, "once"])
+diff --git a/tests/tools/test_mcp_trust_approval_scope.py b/tests/tools/test_mcp_trust_approval_scope.py
+index b5c5dd243ea7..479b0b00205f 100644
+--- a/tests/tools/test_mcp_trust_approval_scope.py
++++ b/tests/tools/test_mcp_trust_approval_scope.py
+@@ -13,6 +13,7 @@
+ from hermes_cli.config import load_config
+ from tools import approval, approval_prompt, mcp_tool
+ from tools import mcp_tool_handlers as handlers
++from tools import mcp_tool_registration as registration
+ from tools.approval_context import reset_current_session_key, set_current_session_key
+ 
+ 
+@@ -70,6 +71,22 @@ def test_session_and_always_answers_stop_the_next_prompt_for_that_tool_only(choi
+         assert "mcp:srv/write" in allowlist
+ 
+ 
++@pytest.mark.parametrize("config", [{"trust": "untrusted", "approve_every_call": True},
++                                    {"approve_every_call": True}])
++@pytest.mark.parametrize("choice", ["session", "always"])
++def test_approve_every_call_asks_for_every_call_and_remembers_nothing(config, choice):
++    """``approve_every_call``: each call gets its own Once / Deny card, a stale broader answer covers
++    that call only, and nothing reaches the session or the allowlist. On its own it still gates."""
++    registration._record_tool_trust_metadata("srv", config, [])
++    with _Chat("tg:chat-a", choice) as chat:
++        assert handlers._trust_gate_check("srv", "write") is None
++        assert handlers._trust_gate_check("srv", "write") is None
++    assert len(chat.cards) == 2
++    assert all(card["allow_session"] is False and card["allow_permanent"] is False for card in chat.cards)
++    assert approval._session_approved == {}
++    assert "mcp:srv/write" not in (load_config().get("command_allowlist") or [])
++
++
+ def test_consent_without_an_identity_offers_and_records_only_once(monkeypatch):
+     """Elicitation-style consent: the card offers Once / Deny, the CLI panel is asked for once/deny,
+     and a stale broader answer approves this call without remembering anything."""
+diff --git a/tests/tools/test_mcp_trust_yolo.py b/tests/tools/test_mcp_trust_yolo.py
+index 555e3929e3c1..d549c3af9ebf 100644
+--- a/tests/tools/test_mcp_trust_yolo.py
++++ b/tests/tools/test_mcp_trust_yolo.py
+@@ -3,7 +3,8 @@
+ Invariants: when every approval is bypassed for the calling session (session ``/yolo``, process
+ ``--yolo``, ``approvals.mode: off``), a write-capable call on a ``trust: untrusted`` server runs
+ without the trust prompt, and only for that session; the declared spend limit is a budget, not an
+-approval, so a call that would cross it still asks, and where nobody can answer it is refused.
++approval, so a call that would cross it still asks, and where nobody can answer it is refused. An
++``approve_every_call`` server is never bypassed: each write-capable call asks, or is refused unanswered.
+ """
+ 
+ import json
+@@ -79,6 +80,35 @@ def test_yolo_and_mode_off_skip_the_trust_prompt_for_the_calling_session_only():
+     assert other.cards == []
+ 
+ 
++@pytest.mark.parametrize("bypass", ["session_yolo", "process_yolo", "mode_off", "allowlist"])
++def test_approve_every_call_asks_through_every_bypass_and_refuses_when_nobody_can_answer(monkeypatch, bypass):
++    """``approve_every_call`` is never skipped: not by ``/yolo``, ``--yolo``, ``approvals.mode: off``,
++    nor an ``mcp:<server>/<tool>`` grant written before the option was set."""
++    _register({"trust": "untrusted", "approve_every_call": True})
++    config = {}
++    if bypass == "session_yolo":
++        approval.enable_session_yolo("tg:yolo")
++    elif bypass == "process_yolo":
++        monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", True)
++    elif bypass == "mode_off":
++        config = {"approvals": {"mode": "off"}}
++    else:
++        config = {"command_allowlist": ["mcp:srv/write"]}
++    (get_hermes_home() / "config.yaml").write_text(json.dumps(config))
++    with _Chat("tg:yolo", "once") as chat:
++        assert handlers._trust_gate_check("srv", "write") is None
++        assert handlers._trust_gate_check("srv", "write") is None
++    assert len(chat.cards) == 2
++
++    tokens, key = set_session_vars(cron_session="1"), set_current_session_key("cron:job")
++    try:
++        refused = handlers._trust_gate_check("srv", "write")
++    finally:
++        reset_current_session_key(key)
++        clear_session_vars(tokens)
++    assert "did not approve" in json.loads(refused)["error"]
++
++
+ def test_spend_limit_still_asks_under_yolo_and_refuses_when_nobody_can_answer():
+     _register(PAID)
+     approval.enable_session_yolo("tg:yolo")
+diff --git a/tools/approval_gateway_wait.py b/tools/approval_gateway_wait.py
+index 398ee417e234..f3f7b8154f1f 100644
+--- a/tools/approval_gateway_wait.py
++++ b/tools/approval_gateway_wait.py
+@@ -111,8 +111,9 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
+     shape as a direct resolution; persistence stays the caller's and is
+     idempotent across leader and followers); ``deny`` → denial carrying the
+     leader's reason; leader timeout / our own deadline → unresolved. ``once``
+-    returns ``None``: single-use consent covers only the leader's execution,
+-    so the caller must issue a fresh prompt. Hooks fire with ``coalesced=True``
++    (or any answer to a prompt that offered only Once) returns ``None``:
++    single-use consent covers only the leader's execution, so the caller must
++    issue a fresh prompt. Hooks fire with ``coalesced=True``
+     so observers see the follower's lifecycle without a duplicate prompt."""
+     _ctx._fire_approval_hook("pre_approval_request", **payload, coalesced=True)
+     # The leader's captured timeout (when stamped), so a config edit mid-wait can't end the follower first.
+@@ -130,7 +131,7 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
+     else:
+         choice = leader.result
+         resolved = choice is not None
+-    if choice == "once":
++    if choice == "once" or (choice in ("session", "always") and leader.data.get("allow_session") is False):
+         # The post hook fires for the fresh prompt's own lifecycle, not here.
+         return None
+     extra = {"cancelled": cancelled} if cancelled else {}
+diff --git a/tools/mcp_tool.py b/tools/mcp_tool.py
+index 8992500c5e78..4a47dcc1b726 100644
+--- a/tools/mcp_tool.py
++++ b/tools/mcp_tool.py
+@@ -523,13 +523,15 @@ def __init__(self, name: str):
+ # mutation, prompt cache intact. ``_server_trust_levels`` is keyed by the CONSUMING profile's own
+ # key (its policy for the name, even when it adopted another profile's connection);
+ # ``_tool_read_only_hints`` by the connection key (the server's own tool annotations).
++# ``approve_every_call`` records the stricter ``every_call`` tier: untrusted, with no remembered
++# grant and no YOLO / ``approvals.mode: off`` bypass.
+ _server_trust_levels: dict[Any, str] = {}
+ _tool_read_only_hints: dict[Any, dict[str, bool]] = {}
+ # Declared per-tool costs + per-chat spend limit (``tools.mcp_tool_costs.CostPolicy``), keyed like
+ # ``_server_trust_levels``: the consuming profile's policy. Absent = no costs, behaviour unchanged.
+ _server_cost_policies: dict[Any, Any] = {}
+ 
+-_TRUST_FULL, _TRUST_UNTRUSTED = "full", "untrusted"
++_TRUST_FULL, _TRUST_UNTRUSTED, _TRUST_EVERY_CALL = "full", "untrusted", "every_call"
+ 
+ 
+ def _bump_server_error(server_name: str, *, application: bool = False) -> None:
+diff --git a/tools/mcp_tool_handlers.py b/tools/mcp_tool_handlers.py
+index b1a4ad7c65f6..34315c2f3956 100644
+--- a/tools/mcp_tool_handlers.py
++++ b/tools/mcp_tool_handlers.py
+@@ -122,8 +122,8 @@ def _format_trust_gate_arguments(args: dict) -> str:
+ 
+ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] = None,
+                       args: Optional[dict] = None) -> Optional[str]:
+-    """Approval gate for write-capable tools on ``trust: untrusted`` servers, plus the declared spend
+-    limit on any server. None to proceed, else a ``tool_error``. Fail-closed: approval-system errors
++    """Approval gate for write-capable tools on ``trust: untrusted`` and ``approve_every_call`` servers,
++    plus the declared spend limit on any server. None to proceed, else a ``tool_error``. Fail-closed: approval-system errors
+     block. An admitted costed call is charged to the chat's tally and appended to *booked* so the
+     caller can refund it when the call never reaches the server."""
+     from tools.mcp_tool_scope import _server_key
+@@ -131,25 +131,29 @@ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] =
+     # Trust and costs are the calling profile's own policy (an adopter of a shared connection keeps its own).
+     key = _server_key(server_name)
+     trust = _core._server_trust_levels.get(key, _core._TRUST_FULL)
+-    gated = (trust == _core._TRUST_UNTRUSTED and not _tool_is_read_only(server_name, tool_name)
+-             and not _trust_granted(server_name, tool_name))
++    # ``every_call`` honours no remembered grant and no bypass: each write-capable call asks.
++    every_call = trust == _core._TRUST_EVERY_CALL
++    gated = (trust in (_core._TRUST_UNTRUSTED, _core._TRUST_EVERY_CALL)
++             and not _tool_is_read_only(server_name, tool_name)
++             and (every_call or not _trust_granted(server_name, tool_name)))
+     charge = None
+     if key in _core._server_cost_policies:  # no table: not even a session lookup, main's path byte for byte
+         from tools.approval_context import get_current_session_key
+         charge = _costs.pending_charge(key, server_name, tool_name, get_current_session_key())
+     if charge is None:
+-        return _ask_for_call(server_name, tool_name, None, booked, args=args) if gated else None
++        return _ask_for_call(server_name, tool_name, None, booked, args=args, every_call=every_call) if gated else None
+     if not gated and charge.reserve_within_limit()[0]:
+         if booked is not None:
+             booked.append(charge)
+         return None
+     with charge.asking():  # re-read under the slot: a call that asked first may have booked meanwhile
+-        return _ask_for_call(server_name, tool_name, charge, booked, gated=gated, args=args)
++        return _ask_for_call(server_name, tool_name, charge, booked, gated=gated, args=args, every_call=every_call)
+ 
+ 
+ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[list], *,
+-                  gated: bool = True, args: Optional[dict] = None) -> Optional[str]:
+-    """Ask the user about one gated and/or costed call; book the charge only on an explicit yes."""
++                  gated: bool = True, args: Optional[dict] = None, every_call: bool = False) -> Optional[str]:
++    """Ask the user about one gated and/or costed call; book the charge only on an explicit yes.
++    *every_call*: the server is ``approve_every_call``, so the answer covers this call only."""
+     spent, over = 0.0, False
+     if charge is not None:
+         if gated:
+@@ -172,9 +176,11 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
+             message += f"\n\nArguments:\n{_format_trust_gate_arguments(args)}"
+         # Over the limit the answer covers this call only: a remembered trust grant must not
+         # pre-approve the next over-limit call.
+-        remember_key = None if over else _trust_approval_key(server_name, tool_name)
+-        scope = "once" if over else "once, for this session, or always"
+-        description = (f"Server '{server_name}' is configured 'trust: untrusted'. "
++        this_call_only = over or every_call
++        remember_key = None if this_call_only else _trust_approval_key(server_name, tool_name)
++        scope = "once" if this_call_only else "once, for this session, or always"
++        policy = "approve_every_call" if every_call else "trust: untrusted"
++        description = (f"Server '{server_name}' is configured '{policy}'. "
+                        f"Approve to run '{tool_name}' {scope}, or deny to block it.")
+         title = f"MCP server '{server_name}' is asking"
+     else:
+diff --git a/tools/mcp_tool_registration.py b/tools/mcp_tool_registration.py
+index 2e457bad9928..cc054449d35d 100644
+--- a/tools/mcp_tool_registration.py
++++ b/tools/mcp_tool_registration.py
+@@ -49,6 +49,15 @@ def _normalize_server_trust(value: Any) -> str:
+     return _core._TRUST_UNTRUSTED
+ 
+ 
++def _server_trust_tier(config: Optional[dict]) -> str:
++    """Recorded tier for a server entry: ``approve_every_call`` (present and not false) -> ``every_call``,
++    whatever ``trust`` says; otherwise ``trust`` normalized."""
++    config = config or {}
++    if "approve_every_call" in config and _parse_boolish(config["approve_every_call"], default=True):
++        return _core._TRUST_EVERY_CALL
++    return _normalize_server_trust(config.get("trust"))
++
++
+ def _annotation_read_only_hint(mcp_tool: Any) -> bool:
+     """True only when annotations (SDK object or cache dict) carry an exact ``True`` read-only hint;
+     unknown = write-capable. mcp 2.x exposes the attribute as ``read_only_hint`` (camelCase is only a
+@@ -81,7 +90,7 @@ def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any]
+     with _core._lock:
+         if key is None:
+             key = _server_key(server_name)
+-        _core._server_trust_levels[key] = _normalize_server_trust((config or {}).get("trust"))
++        _core._server_trust_levels[key] = _server_trust_tier(config)
+         _record_cost_policy(server_name, config, key)
+         hints = _core._tool_read_only_hints.setdefault(key, {})
+         hints.update({t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)})
+@@ -103,7 +112,7 @@ def _record_scope_trust(server_name: str, config: dict, scope: str) -> None:
+     write-capable call."""
+     with _core._lock:
+         key = _server_key(server_name, scope, current=False)
+-        _core._server_trust_levels[key] = _normalize_server_trust((config or {}).get("trust"))
++        _core._server_trust_levels[key] = _server_trust_tier(config)
+         _record_cost_policy(server_name, config, key)
+ 
+ 
+diff --git a/website/docs/reference/mcp-config-reference.md b/website/docs/reference/mcp-config-reference.md
+index 48e0c66eb135..89ea9ef51fb9 100644
+--- a/website/docs/reference/mcp-config-reference.md
++++ b/website/docs/reference/mcp-config-reference.md
+@@ -69,7 +69,8 @@ mcp_servers:
+ | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
+ | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
+ | `events` | bool | both | Experimental MCP events client with webhook delivery (default: `false`). Registers `list_event_types`, `subscribe_event` and `unsubscribe_event` for this server. Needs `platforms.webhook.extra.public_url` (HTTPS) and a running gateway. Hermes refreshes subscriptions only while it is connected to the server, so with `lazy: true` or `idle_timeout_seconds` a subscription can lapse until the next connection resubscribes it. See [MCP Events](../user-guide/features/mcp.md#mcp-events-experimental) |
+-| `trust` | string | both | Trust tier: `full` (default) or `untrusted`. On an `untrusted` server, every write-capable tool call (any tool without a `readOnlyHint: true` annotation) requires user approval through the standard approval surface before it runs. The prompt offers Allow Once, Session (that tool, for the rest of the chat) and Always (written to `command_allowlist` as `mcp:<server>/<tool>`; deleting the entry revokes it for every other chat, while the chat that answered Always keeps it until that chat ends); each covers one tool, never the server's others. [YOLO](../user-guide/security.md#yolo-mode) and `approvals.mode: off` skip this prompt (`/yolo` for that chat, `--yolo` for that process, `approvals.mode: off` for that profile); a declared `spend_limit` still asks. `readOnlyHint` is a server-supplied *hint* — a lying server can at most skip approval for tools it claims are read-only, never gain extra access — so mark any server you don't fully control as `untrusted`. The same hint decides whether a call is transparently retried after the transport session expires mid-call: only `readOnlyHint: true` tools are replayed, while unannotated (write-capable) tools return an `outcome_uncertain` error — on a Streamable-HTTP server that expires idle sessions this means the first unannotated call after an idle period may fail and must be verified before re-invoking. Unrecognized values are treated as `untrusted` (fail-closed) A portable package can request `untrusted` for its own server in `plugin.json` (see [Portable Agent Plugins](../developer-guide/plugins/index.md#portable-agent-plugins-v1-packages)); a `config.yaml` entry with the same name always wins |
++| `trust` | string | both | Trust tier: `full` (default) or `untrusted`. On an `untrusted` server, every write-capable tool call (any tool without a `readOnlyHint: true` annotation) requires user approval through the standard approval surface before it runs. The prompt offers Allow Once, Session (that tool, for the rest of the chat) and Always (written to `command_allowlist` as `mcp:<server>/<tool>`; deleting the entry revokes it for every other chat, while the chat that answered Always keeps it until that chat ends); each covers one tool, never the server's others. [YOLO](../user-guide/security.md#yolo-mode) and `approvals.mode: off` skip this prompt (`/yolo` for that chat, `--yolo` for that process, `approvals.mode: off` for that profile); a declared `spend_limit` and `approve_every_call` still ask. `readOnlyHint` is a server-supplied *hint* — a lying server can at most skip approval for tools it claims are read-only, never gain extra access — so mark any server you don't fully control as `untrusted`. The same hint decides whether a call is transparently retried after the transport session expires mid-call: only `readOnlyHint: true` tools are replayed, while unannotated (write-capable) tools return an `outcome_uncertain` error — on a Streamable-HTTP server that expires idle sessions this means the first unannotated call after an idle period may fail and must be verified before re-invoking. Unrecognized values are treated as `untrusted` (fail-closed) A portable package can request `untrusted` for its own server in `plugin.json` (see [Portable Agent Plugins](../developer-guide/plugins/index.md#portable-agent-plugins-v1-packages)); a `config.yaml` entry with the same name always wins |
++| `approve_every_call` | bool | both | Ask before every write-capable call on this server (default: `false`). Implies `trust: untrusted`. Each prompt offers only Allow Once and Deny: no Session or Always answer is recorded, and an existing `mcp:<server>/<tool>` entry in `command_allowlist` is ignored. YOLO and `approvals.mode: off` do not skip it, so where nobody can answer (cron, `chat -q`) the call is refused. For servers where each write needs a person, such as one that switches devices |
+ | `tool_costs` | mapping | both | What each tool spends, keyed by the MCP tool name: a non-negative number, a `[min, max]` range, or `{credits: <number or range>, note: "per animation"}`. The approval prompt names the cost and the chat's running total. Undeclared and zero-cost tools are unaffected. See [Tool costs and spend limits](../user-guide/features/mcp.md#tool-costs-and-spend-limits) |
+ | `spend_limit` | number | both | Per-chat budget for this server's costed tools (`0`/absent = no limit). A costed call that would take the chat past it asks first, even on a `trust: full` server, and is refused where nobody can answer (cron, `chat -q`) |
+ | `cost_unit` | string | both | Label shown with costs and totals (default: `credits`) |
+diff --git a/website/docs/user-guide/security.md b/website/docs/user-guide/security.md
+index 8a07e2f74824..0120c8bce223 100644
+--- a/website/docs/user-guide/security.md
++++ b/website/docs/user-guide/security.md
+@@ -95,6 +95,7 @@ YOLO mode disables **all** dangerous command safety checks for the session — *
+ YOLO and `approvals.mode: off` also skip the [`trust: untrusted`](../reference/mcp-config-reference.md) MCP prompt: a write-capable tool on an untrusted server runs without asking, with each source's usual reach. `/yolo` covers only the chat it was typed in (another chat is still asked); `--yolo` and `HERMES_YOLO_MODE` cover the sessions of the Hermes process they were given to; `approvals.mode: off` covers every chat and cron job of that profile. They do **not** skip:
+ 
+ - **An MCP server's spend limit.** A call that would take the chat past a declared [`spend_limit`](./features/mcp.md#tool-costs-and-spend-limits) still asks, and where nobody can answer (a cron job, `hermes chat -q`) it is refused. The limit is a budget you set, not a safety prompt.
++- **An MCP server with [`approve_every_call`](../reference/mcp-config-reference.md).** Every write-capable call on it still asks, offering only Allow Once and Deny, and where nobody can answer it is refused.
+ - **Questions from an MCP server** ([elicitation](./features/mcp.md#mcp-elicitation-support)), which ask you for input rather than for permission.
+ - **Payment-card fill prompts** from the [credential vault](./features/credential-vault.md#paying-and-filling-addresses), which hand a card to a page, and MCP event subscriptions, which install a standing trigger.
+ 
