@@ -8,7 +8,7 @@ Every file in `patches/` is one open pull request in NousResearch/hermes-agent, 
 
 ## How it works
 
-The `Dockerfile` starts from one Hermes release, pinned by tag and digest. `apply-patches.sh` applies every patch to `/opt/hermes`, where Hermes runs from its source tree. The image has neither tests nor the docs site, so the hunks for `tests/` and `website/` are skipped.
+The `Dockerfile` starts from one Hermes release, pinned by tag and digest. `scripts/apply-patches.sh` applies every patch to `/opt/hermes`, where Hermes runs from its source tree. The image has neither tests nor the docs site, so the hunks for `tests/` and `website/` are skipped.
 
 1. Renovate checks Docker Hub every hour and opens a PR for a new Hermes release.
 2. CI builds the image with the patches and imports every module they touch. If CI passes, the PR merges itself.
@@ -19,7 +19,7 @@ Tags are `<hermes tag>-lares.<n>`, for example `v0.22.6-lares.1`. `n` counts the
 
 ## When CI fails
 
-`apply-patches.sh` names the patch and says why:
+`scripts/apply-patches.sh` names the patch and says why:
 
 - **"… is already in this Hermes release"**: the PR has shipped. Delete the patch in the Renovate PR, then tick its box in lares#2610.
 - **"… no longer applies"**: if the PR was merged in a changed form, delete the patch as above. Otherwise rebase the upstream PR on `main` and refresh the file (below).
