@@ -1,10 +1,10 @@
 # hermes-agent-patched
 
-The [Hermes Agent](https://github.com/NousResearch/hermes-agent) image `nousresearch/hermes-agent`, plus our open upstream pull requests as patches. The [lares](https://github.com/alexander-zimmermann/lares) cluster runs this image instead of the upstream one, so a fix we need does not wait for its review.
+The [Hermes Agent](https://github.com/NousResearch/hermes-agent) image `nousresearch/hermes-agent`, plus the open upstream pull requests we need, as patches. The [lares](https://github.com/alexander-zimmermann/lares) cluster runs this image instead of the upstream one, so a fix we need does not wait for its review.
 
 ## The rule
 
-Every file in `patches/` is one open pull request in NousResearch/hermes-agent, and lares tracks each of them in [lares#2610](https://github.com/alexander-zimmermann/lares/issues/2610). A change without an upstream PR does not go in here. The goal is an empty `patches/`. Once it is empty, lares goes back to the upstream image and this repo is archived.
+Every file in `patches/` is one open pull request in NousResearch/hermes-agent, and lares tracks each of them in [lares#2610](https://github.com/alexander-zimmermann/lares/issues/2610). A change without an upstream PR does not go in here. The one exception is GitHub's limit of 5 open pull requests per contributor: while it blocks one of our fixes, the patch stands for the upstream issue that links the pushed branch, and the PR follows once one of ours closes. The goal is an empty `patches/`. Once it is empty, lares goes back to the upstream image and this repo is archived.
 
 ## How it works
 
@@ -35,6 +35,8 @@ branch=jobs-api-script-jobs
 ```
 
 `gh pr diff` gives the diff against upstream `main`. When that no longer applies to the pinned release, edit the patch file by hand until it does.
+
+A patch held back by the PR limit is named after the upstream issue instead. It starts with the issue comment that links the branch and the branch's URL, followed by `git diff main...<branch>`. Once the PR is open, rename the file to the PR number and replace both lines with the PR's URL.
 
 To check locally:
 
