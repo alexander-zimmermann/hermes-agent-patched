@@ -16,6 +16,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Every patch's upstream PR is still open
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=0
+          for p in patches/*.patch; do
+            n=$(sed -n '1s|^Upstream: https://github.com/NousResearch/hermes-agent/pull/||p' "$p")
+            state=$(gh pr view "$n" -R NousResearch/hermes-agent --json state --jq .state)
+            echo "$(basename "$p"): $state"
+            if [ "$state" = CLOSED ]; then
+              echo "::error::$(basename "$p"): the upstream PR was closed without a merge: delete the patch (see README)"
+              status=1
+            fi
+          done
+          exit $status
+
       - name: Build with the patches applied
         run: docker build --platform linux/amd64 -t hermes-agent-patched:ci .
 
