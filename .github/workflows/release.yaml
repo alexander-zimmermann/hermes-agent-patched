@@ -71,7 +71,7 @@ jobs:
           BASE: ${{ steps.tag.outputs.base }}
         run: |
           {
-            echo "Hermes ${BASE} with these open upstream PRs:"
+            echo "[Hermes ${BASE}](https://github.com/NousResearch/hermes-agent/releases/tag/${BASE}) with these open upstream PRs:"
             echo
             sed -n 's/^Upstream: /- /p' patches/*.patch
           } > notes.md
