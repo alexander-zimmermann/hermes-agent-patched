@@ -1,22 +1,22 @@
 Upstream: https://github.com/NousResearch/hermes-agent/pull/143213
 
 diff --git a/gateway/platforms/api_server.py b/gateway/platforms/api_server.py
-index f8160def3de65..fb601075af9b9 100644
+index 8e4213ac727d8..9521ef9895f38 100644
 --- a/gateway/platforms/api_server.py
 +++ b/gateway/platforms/api_server.py
-@@ -3771,7 +3771,10 @@ async def _handle_session_model_lock(self, request: web.Request) -> web.Response
+@@ -3269,7 +3269,10 @@ async def _handle_session_model_lock(self, request: web.Request) -> web.Response
  
      _JOB_ID_RE = re.compile(r"[a-f0-9]{12}")
      # Update whitelist — prevents clients injecting arbitrary keys.
--    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
+-    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled", "timezone"}
 +    _UPDATE_ALLOWED_FIELDS = {
-+        "name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled",
++        "name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled", "timezone",
 +        "script", "no_agent", "workdir",
 +    }
      _MAX_NAME_LENGTH = 200
      _MAX_PROMPT_LENGTH = 5000
  
-@@ -3811,6 +3814,16 @@ def _validate_cron_prompt(self, prompt: str) -> Optional[web.Response]:
+@@ -3309,6 +3312,16 @@ def _validate_cron_prompt(self, prompt: str) -> Optional[web.Response]:
                  return web.json_response({"error": scan_error}, status=400)
          return None
  
@@ -30,10 +30,10 @@ index f8160def3de65..fb601075af9b9 100644
 +                return web.json_response({"error": f"{key} must be a string"}, status=400)
 +        return None
 +
-     def _job_response(self, fn, job_id: str, *, notify: bool) -> web.Response:
-         """Run ``fn(job_id)``: 404 when falsy, else ``{"job": ...}``; exceptions -> 500."""
-         try:
-@@ -3861,13 +3874,20 @@ async def _handle_create_job(self, request: web.Request) -> web.Response:
+     def _job_response(self, fn, job_id: str, *, notify: bool, invalid_input=()) -> web.Response:
+         from gateway.platforms.api_server_cron_jobs import job_response
+         return job_response(self, fn, job_id, notify=notify, invalid_input=invalid_input)
+@@ -3351,13 +3364,20 @@ async def _handle_create_job(self, request: web.Request) -> web.Response:
                  return prompt_err
              if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
                  return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
@@ -44,10 +44,10 @@ index f8160def3de65..fb601075af9b9 100644
                  "prompt": prompt, "schedule": schedule, "name": name,
                  "deliver": body.get("deliver", "local"),
                  "origin": self._cron_origin_from_request(request)}
--            for key in ("paused", "paused_reason"):
+-            for key in ("paused", "paused_reason", "timezone"):
 +            # Script jobs as `hermes cron create --script [--no-agent]` makes them; create_job
 +            # validates the combination (a no_agent job needs its script).
-+            for key in ("paused", "paused_reason", "script", "workdir"):
++            for key in ("paused", "paused_reason", "timezone", "script", "workdir"):
                  if key in body:
                      kwargs[key] = body[key]
 +            if body.get("no_agent"):
@@ -55,22 +55,26 @@ index f8160def3de65..fb601075af9b9 100644
              if skills:
                  kwargs["skills"] = skills
              if repeat is not None:
-@@ -3901,6 +3921,9 @@ async def _handle_update_job(self, request: web.Request) -> web.Response:
-                 prompt_err = self._validate_cron_prompt(sanitized["prompt"])
-                 if prompt_err:
-                     return prompt_err
-+            script_err = self._validate_cron_script_fields(sanitized)
-+            if script_err:
-+                return script_err
-         except Exception as e:
-             return self._cron_error_response(e)
-         return self._job_response(lambda jid: _cron_update(jid, sanitized), job_id, notify=True)
+diff --git a/gateway/platforms/api_server_cron_jobs.py b/gateway/platforms/api_server_cron_jobs.py
+index fe37559c2b16b..2b164eb117301 100644
+--- a/gateway/platforms/api_server_cron_jobs.py
++++ b/gateway/platforms/api_server_cron_jobs.py
+@@ -37,6 +37,9 @@ def _invalid_update(adapter, sanitized: dict):
+             return web.json_response({"error": f"{key.capitalize()} must be a string"}, status=400)
+     if "name" in sanitized and len(sanitized["name"]) > adapter._MAX_NAME_LENGTH:
+         return web.json_response({"error": f"Name must be ≤ {adapter._MAX_NAME_LENGTH} characters"}, status=400)
++    script_err = adapter._validate_cron_script_fields(sanitized)
++    if script_err is not None:
++        return script_err
+     return adapter._validate_cron_prompt(sanitized["prompt"]) if "prompt" in sanitized else None
+ 
+ 
 diff --git a/tests/gateway/test_api_server_jobs.py b/tests/gateway/test_api_server_jobs.py
-index c9d483075ce13..f1be18a4f0b61 100644
+index 6a632e4a8b479..efa153bd7c841 100644
 --- a/tests/gateway/test_api_server_jobs.py
 +++ b/tests/gateway/test_api_server_jobs.py
-@@ -140,6 +140,95 @@ async def test_create_job(self, adapter):
-                 assert call_kwargs["origin"]["user_agent"] == "cron-client"
+@@ -154,6 +154,95 @@ async def test_a_job_created_through_the_dashboard_peer_route_names_its_creator(
+                 assert mock_create.call_args[1]["origin"]["peer_principal"] == "usr_abc"
  
  
 +    @pytest.mark.asyncio
@@ -165,7 +169,7 @@ index c9d483075ce13..f1be18a4f0b61 100644
      @pytest.mark.asyncio
      async def test_create_job_reports_saved_but_unregistered(self, adapter):
          """A failed external registration is a structured partial failure."""
-@@ -241,6 +330,64 @@ async def test_update_job_rejects_unknown_fields(self, adapter):
+@@ -275,6 +364,64 @@ async def test_update_job_rejects_unknown_fields(self, adapter):
                  assert "evil_field" not in sanitized
                  assert "__proto__" not in sanitized
  
@@ -228,13 +232,13 @@ index c9d483075ce13..f1be18a4f0b61 100644
 +                mock_update.assert_not_called()
 +
  
- # ---------------------------------------------------------------------------
- # 13. test_delete_job
+     @pytest.mark.asyncio
+     @pytest.mark.parametrize("patch_body", [
 diff --git a/website/docs/user-guide/features/api-server.md b/website/docs/user-guide/features/api-server.md
-index 2d920eb64d9cb..31dfd99fc1b12 100644
+index 82c591d3afadd..7c59e3f216510 100644
 --- a/website/docs/user-guide/features/api-server.md
 +++ b/website/docs/user-guide/features/api-server.md
-@@ -763,7 +763,7 @@ List all scheduled jobs.
+@@ -686,7 +686,7 @@ List all scheduled jobs.
  
  ### POST /api/jobs
  
@@ -243,7 +247,7 @@ index 2d920eb64d9cb..31dfd99fc1b12 100644
  
  ### GET /api/jobs/\{job_id\}
  
-@@ -771,7 +771,7 @@ Fetch a single job's definition and last-run state.
+@@ -694,7 +694,7 @@ Fetch a single job's definition and last-run state.
  
  ### PATCH /api/jobs/\{job_id\}
  
