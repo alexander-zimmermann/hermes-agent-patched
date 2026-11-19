@@ -2,14 +2,14 @@ Upstream: https://github.com/NousResearch/hermes-agent/pull/148933
 
 diff --git a/contributors/emails/alexander@zimmermann.eu.com b/contributors/emails/alexander@zimmermann.eu.com
 new file mode 100644
-index 000000000000..68bb810f3eb5
+index 0000000000000..68bb810f3eb51
 --- /dev/null
 +++ b/contributors/emails/alexander@zimmermann.eu.com
 @@ -0,0 +1,2 @@
 +alexander-zimmermann
 +# mcp: approve_every_call asks before every write-capable call
 diff --git a/tests/tools/test_approval_gateway_wait_coalesce_race.py b/tests/tools/test_approval_gateway_wait_coalesce_race.py
-index 8c0c11aed5a2..f0df917fca2c 100644
+index 8c0c11aed5a27..f0df917fca2c1 100644
 --- a/tests/tools/test_approval_gateway_wait_coalesce_race.py
 +++ b/tests/tools/test_approval_gateway_wait_coalesce_race.py
 @@ -7,6 +7,8 @@
@@ -64,7 +64,7 @@ index 8c0c11aed5a2..f0df917fca2c 100644
 +        thread.join(10)
 +    assert sorted(r["choice"] for r in results) == sorted([choice, "once"])
 diff --git a/tests/tools/test_mcp_trust_approval_scope.py b/tests/tools/test_mcp_trust_approval_scope.py
-index b5c5dd243ea7..479b0b00205f 100644
+index d0afb699fd312..6d771d0779214 100644
 --- a/tests/tools/test_mcp_trust_approval_scope.py
 +++ b/tests/tools/test_mcp_trust_approval_scope.py
 @@ -13,6 +13,7 @@
@@ -75,8 +75,8 @@ index b5c5dd243ea7..479b0b00205f 100644
  from tools.approval_context import reset_current_session_key, set_current_session_key
  
  
-@@ -70,6 +71,22 @@ def test_session_and_always_answers_stop_the_next_prompt_for_that_tool_only(choi
-         assert "mcp:srv/write" in allowlist
+@@ -88,6 +89,22 @@ def test_handler_rechecks_gate_when_rediscovery_drops_read_only_hint(monkeypatch
+     assert asked == [("srv", "write")]
  
  
 +@pytest.mark.parametrize("config", [{"trust": "untrusted", "approve_every_call": True},
@@ -98,8 +98,56 @@ index b5c5dd243ea7..479b0b00205f 100644
  def test_consent_without_an_identity_offers_and_records_only_once(monkeypatch):
      """Elicitation-style consent: the card offers Once / Deny, the CLI panel is asked for once/deny,
      and a stale broader answer approves this call without remembering anything."""
+diff --git a/tests/tools/test_mcp_trust_gate_rediscovery.py b/tests/tools/test_mcp_trust_gate_rediscovery.py
+index 4b3562d5c1a02..0bac292592788 100644
+--- a/tests/tools/test_mcp_trust_gate_rediscovery.py
++++ b/tests/tools/test_mcp_trust_gate_rediscovery.py
+@@ -314,3 +314,27 @@ def test_session_expired_replay_runs_when_the_user_already_granted_the_tool():
+         result, asked = _call()
+     assert result == {"result": "ok"} and asked == []
+     new.call_tool.assert_awaited_once()
++
++
++EVERY_CALL = {"approve_every_call": True, "command": "srv-bin"}
++
++
++def test_recheck_on_an_every_call_server_asks_despite_a_remembered_grant():
++    """``approve_every_call`` honours no grant: the hint-flip re-check asks where ``untrusted`` would skip."""
++    task = _install(_server(EVERY_CALL))
++    new = _session(read_only=False)
++    with _recycled_wake_rediscovers(task, new), patch.object(handlers, "_trust_granted", return_value=True):
++        result, asked = _call(answer="decline")
++    assert len(asked) == 1 and "NOT run" in result["error"]
++    new.call_tool.assert_not_awaited()
++
++
++def test_every_call_server_does_not_replay_a_tool_a_reconnect_turned_write_capable():
++    task = _install(_server({"approve_every_call": True, "url": "https://mcp.example.test/mcp"}))
++    old = task.session
++    old.call_tool.side_effect = RuntimeError("Session terminated")
++    new = _session(read_only=False)
++    with _reconnect_before_retry(task, new):
++        result, asked = _call()
++    assert "NOT run without approval" in result["error"] and asked == []
++    old.call_tool.assert_awaited_once()
+diff --git a/tests/tools/test_mcp_trust_missing_record.py b/tests/tools/test_mcp_trust_missing_record.py
+index 5e55edac572a9..545c6547f534e 100644
+--- a/tests/tools/test_mcp_trust_missing_record.py
++++ b/tests/tools/test_mcp_trust_missing_record.py
+@@ -192,3 +192,11 @@ def outage(*_args, **_kwargs):
+         assert _write_call_asks()
+     session.call_tool.assert_not_awaited()
+     assert any("config read failed (ConfigBackendUnavailable)" in r.getMessage() for r in caplog.records)
++
++
++def test_every_call_server_without_a_trust_record_asks_despite_a_grant(session):
++    """``approve_every_call`` without a ``trust`` key: the fallback reads ``every_call``, not ``full``."""
++    _configure(None, approve_every_call=True)
++    with patch.object(_mcp_handlers, "_trust_granted", return_value=True):
++        assert _write_call_asks()
++    session.call_tool.assert_not_awaited()
 diff --git a/tests/tools/test_mcp_trust_yolo.py b/tests/tools/test_mcp_trust_yolo.py
-index 555e3929e3c1..d549c3af9ebf 100644
+index 555e3929e3c17..d549c3af9ebf0 100644
 --- a/tests/tools/test_mcp_trust_yolo.py
 +++ b/tests/tools/test_mcp_trust_yolo.py
 @@ -3,7 +3,8 @@
@@ -149,10 +197,10 @@ index 555e3929e3c1..d549c3af9ebf 100644
      _register(PAID)
      approval.enable_session_yolo("tg:yolo")
 diff --git a/tools/approval_gateway_wait.py b/tools/approval_gateway_wait.py
-index 398ee417e234..f3f7b8154f1f 100644
+index 13a383ada3860..fa0ca21b274af 100644
 --- a/tools/approval_gateway_wait.py
 +++ b/tools/approval_gateway_wait.py
-@@ -111,8 +111,9 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
+@@ -135,8 +135,9 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
      shape as a direct resolution; persistence stays the caller's and is
      idempotent across leader and followers); ``deny`` → denial carrying the
      leader's reason; leader timeout / our own deadline → unresolved. ``once``
@@ -164,7 +212,7 @@ index 398ee417e234..f3f7b8154f1f 100644
      so observers see the follower's lifecycle without a duplicate prompt."""
      _ctx._fire_approval_hook("pre_approval_request", **payload, coalesced=True)
      # The leader's captured timeout (when stamped), so a config edit mid-wait can't end the follower first.
-@@ -130,7 +131,7 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
+@@ -154,7 +155,7 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
      else:
          choice = leader.result
          resolved = choice is not None
@@ -174,10 +222,10 @@ index 398ee417e234..f3f7b8154f1f 100644
          return None
      extra = {"cancelled": cancelled} if cancelled else {}
 diff --git a/tools/mcp_tool.py b/tools/mcp_tool.py
-index 8992500c5e78..4a47dcc1b726 100644
+index 8597983abd25e..aee69377618d9 100644
 --- a/tools/mcp_tool.py
 +++ b/tools/mcp_tool.py
-@@ -523,13 +523,15 @@ def __init__(self, name: str):
+@@ -564,13 +564,15 @@ def __init__(self, name: str):
  # mutation, prompt cache intact. ``_server_trust_levels`` is keyed by the CONSUMING profile's own
  # key (its policy for the name, even when it adopted another profile's connection);
  # ``_tool_read_only_hints`` by the connection key (the server's own tool annotations).
@@ -195,10 +243,79 @@ index 8992500c5e78..4a47dcc1b726 100644
  
  def _bump_server_error(server_name: str, *, application: bool = False) -> None:
 diff --git a/tools/mcp_tool_handlers.py b/tools/mcp_tool_handlers.py
-index b1a4ad7c65f6..34315c2f3956 100644
+index 46dda77323f17..929878e00145c 100644
 --- a/tools/mcp_tool_handlers.py
 +++ b/tools/mcp_tool_handlers.py
-@@ -122,8 +122,8 @@ def _format_trust_gate_arguments(args: dict) -> str:
+@@ -16,7 +16,7 @@
+ from tools.registry import invalidate_check_fn_cache, tool_error
+ from tools.ansi_strip import strip_unicode_tags, strip_unicode_tags_deep
+ from tools.thread_context import capture_thread_callbacks
+-from tools.mcp_tool_common import _exc_str, _sanitize_error, exact_mcp_identifier, mcp_field, _core
++from tools.mcp_tool_common import _exc_str, _parse_boolish, _sanitize_error, exact_mcp_identifier, mcp_field, _core
+ from tools import mcp_tool_loop as _loop
+ from tools.mcp_tool_content import (
+     _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block, _mcp_result_with_native_images,
+@@ -124,14 +124,28 @@ def _format_trust_gate_arguments(args: dict) -> str:
+ 
+ _NO_TRUST_KEY = object()
+ _NOT_CONFIGURED = object()
++_EVERY_CALL_SET = object()
++
++
++def _gated_tier(trust: str) -> bool:
++    """A tier whose write-capable calls ask: ``untrusted``, or its stricter ``every_call``."""
++    return trust in (_core._TRUST_UNTRUSTED, _core._TRUST_EVERY_CALL)
++
++
++def _sets_every_call(*entries) -> bool:
++    """``approve_every_call`` of the first entry that has the key, read as registration reads it."""
++    for e in entries:
++        if isinstance(e, dict) and "approve_every_call" in e:
++            return _parse_boolish(e["approve_every_call"], default=True)
++    return False
+ 
+ 
+ def _raw_server_entry_trust(server_name: str, home) -> Any:
+     """The raw ``trust`` value of *server_name*'s entry in *home*'s config: managed overlay, then native
+-    ``mcp_servers``, then a plugin-declared server (registration's precedence). ``_NO_TRUST_KEY`` for an
+-    entry without one, ``_NOT_CONFIGURED`` when no source has the server. No ``${VAR}`` expansion: the tier
+-    needs no secret, and an unscoped multiplex expansion raises. Read errors (managed overlay included)
+-    propagate."""
++    ``mcp_servers``, then a plugin-declared server (registration's precedence). ``_EVERY_CALL_SET`` when
++    that entry sets ``approve_every_call``, ``_NO_TRUST_KEY`` for an entry without ``trust``,
++    ``_NOT_CONFIGURED`` when no source has the server. No ``${VAR}`` expansion: the tier needs no secret,
++    and an unscoped multiplex expansion raises. Read errors (managed overlay included) propagate."""
+     from hermes_cli.config_backend import read_config_doc_readonly
+     from hermes_cli.managed_scope import load_managed_config
+     from hermes_constants import get_hermes_home, hermes_home_key
+@@ -145,6 +159,8 @@ def entry(doc):
+     except FileNotFoundError:
+         native = None
+     managed = entry(load_managed_config(strict=True))  # a lost admin ``trust: untrusted`` must not read as absent
++    if _sets_every_call(managed, native):
++        return _EVERY_CALL_SET
+     if isinstance(managed, dict) and "trust" in managed:
+         return managed["trust"]
+     if isinstance(native, dict) or isinstance(managed, dict):
+@@ -154,7 +170,7 @@ def entry(doc):
+         discover_plugins()
+         portable = get_plugin_manager().get_portable_mcp_servers().get(server_name)
+         if isinstance(portable, dict):
+-            return portable.get("trust", _NO_TRUST_KEY)
++            return _EVERY_CALL_SET if _sets_every_call(portable) else portable.get("trust", _NO_TRUST_KEY)
+     return _NOT_CONFIGURED
+ 
+ 
+@@ -178,6 +194,8 @@ def _configured_trust(server_name: str, key) -> str:
+     else:
+         if raw is _NOT_CONFIGURED:
+             trust, source = _core._TRUST_UNTRUSTED, "server not in config"
++        elif raw is _EVERY_CALL_SET:
++            trust, source = _core._TRUST_EVERY_CALL, "approve_every_call"
+         elif raw is _NO_TRUST_KEY:
+             trust, source = _core._TRUST_FULL, "config entry has no trust key"
+         else:
+@@ -189,8 +207,8 @@ def _configured_trust(server_name: str, key) -> str:
  
  def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] = None,
                        args: Optional[dict] = None) -> Optional[str]:
@@ -209,19 +326,20 @@ index b1a4ad7c65f6..34315c2f3956 100644
      block. An admitted costed call is charged to the chat's tally and appended to *booked* so the
      caller can refund it when the call never reaches the server."""
      from tools.mcp_tool_scope import _server_key
-@@ -131,25 +131,29 @@ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] =
-     # Trust and costs are the calling profile's own policy (an adopter of a shared connection keeps its own).
-     key = _server_key(server_name)
-     trust = _core._server_trust_levels.get(key, _core._TRUST_FULL)
--    gated = (trust == _core._TRUST_UNTRUSTED and not _tool_is_read_only(server_name, tool_name)
--             and not _trust_granted(server_name, tool_name))
+@@ -200,8 +218,10 @@ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] =
+     trust = _core._server_trust_levels.get(key)
+     if trust is None:
+         trust = _configured_trust(server_name, key)
+-    gated = trust == _core._TRUST_UNTRUSTED and not _tool_is_read_only(server_name, tool_name)
+-    if gated and _trust_granted(server_name, tool_name):
 +    # ``every_call`` honours no remembered grant and no bypass: each write-capable call asks.
 +    every_call = trust == _core._TRUST_EVERY_CALL
-+    gated = (trust in (_core._TRUST_UNTRUSTED, _core._TRUST_EVERY_CALL)
-+             and not _tool_is_read_only(server_name, tool_name)
-+             and (every_call or not _trust_granted(server_name, tool_name)))
-     charge = None
-     if key in _core._server_cost_policies:  # no table: not even a session lookup, main's path byte for byte
++    gated = _gated_tier(trust) and not _tool_is_read_only(server_name, tool_name)
++    if gated and not every_call and _trust_granted(server_name, tool_name):
+         logger.info("MCP trust gate: trust prompt skipped for '%s' on untrusted server '%s' (key %r): remembered "
+                     "grant or approval bypass", tool_name, server_name, key)
+         gated = False
+@@ -210,21 +230,21 @@ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] =
          from tools.approval_context import get_current_session_key
          charge = _costs.pending_charge(key, server_name, tool_name, get_current_session_key())
      if charge is None:
@@ -236,6 +354,20 @@ index b1a4ad7c65f6..34315c2f3956 100644
 +        return _ask_for_call(server_name, tool_name, charge, booked, gated=gated, args=args, every_call=every_call)
  
  
+-def _untrusted(server_name: str) -> bool:
++def _trust_tier(server_name: str) -> str:
+     """The calling profile's tier, resolved as ``_trust_gate_check`` does: a missing record fails closed."""
+     from tools.mcp_tool_scope import _server_key
+     key = _server_key(server_name)
+     trust = _core._server_trust_levels.get(key)
+-    return (trust if trust is not None else _configured_trust(server_name, key)) == _core._TRUST_UNTRUSTED
++    return trust if trust is not None else _configured_trust(server_name, key)
+ 
+ 
+ class _RefusedRetry(str):
+@@ -245,8 +265,9 @@ def _never_reached_server(exc: BaseException) -> bool:
+ 
+ 
  def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[list], *,
 -                  gated: bool = True, args: Optional[dict] = None) -> Optional[str]:
 -    """Ask the user about one gated and/or costed call; book the charge only on an explicit yes."""
@@ -245,7 +377,7 @@ index b1a4ad7c65f6..34315c2f3956 100644
      spent, over = 0.0, False
      if charge is not None:
          if gated:
-@@ -172,9 +176,11 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
+@@ -269,9 +290,11 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
              message += f"\n\nArguments:\n{_format_trust_gate_arguments(args)}"
          # Over the limit the answer covers this call only: a remembered trust grant must not
          # pre-approve the next over-limit call.
@@ -260,8 +392,30 @@ index b1a4ad7c65f6..34315c2f3956 100644
                         f"Approve to run '{tool_name}' {scope}, or deny to block it.")
          title = f"MCP server '{server_name}' is asking"
      else:
+@@ -859,8 +882,10 @@ def _handler(args: dict, **kwargs) -> Any:
+             # The session that will run the call was (re)discovered after the
+             # gate ran, and it no longer reports the tool as read-only.
+             # Consent must be decided against this metadata, not the cache.
+-            if _untrusted(server_name) and not _trust_granted(server_name, tool_name):
+-                error = _ask_for_call(server_name, tool_name, None, booked, args=args)
++            tier = _trust_tier(server_name)
++            every_call = tier == _core._TRUST_EVERY_CALL
++            if _gated_tier(tier) and (every_call or not _trust_granted(server_name, tool_name)):
++                error = _ask_for_call(server_name, tool_name, None, booked, args=args, every_call=every_call)
+                 if error is not None:
+                     for charge in booked:
+                         charge.refund()
+@@ -868,7 +893,7 @@ def _handler(args: dict, **kwargs) -> Any:
+         # Still cleared only as read-only: a reconnect (a recoverer's, or one whose tools/list is still running
+         # when this call arrives) can rediscover the tool as write-capable before it runs. The grant is read on
+         # this thread (scope-bound); the hint is re-read under _rpc_lock, which every tools/list holds.
+-        cleared_as_read_only = read_only and _untrusted(server_name)
++        cleared_as_read_only = read_only and _gated_tier(_trust_tier(server_name))
+         from tools.mcp_tool_scope import _resolve_server_key
+         hint_key = _resolve_server_key(server_name)
+         image_paths: list[str] = []  # the LAST attempt's cached images (a recoverer may retry _call)
 diff --git a/tools/mcp_tool_registration.py b/tools/mcp_tool_registration.py
-index 2e457bad9928..cc054449d35d 100644
+index c3bcb2060a8b2..46e0ecf262678 100644
 --- a/tools/mcp_tool_registration.py
 +++ b/tools/mcp_tool_registration.py
 @@ -49,6 +49,15 @@ def _normalize_server_trust(value: Any) -> str:
@@ -287,9 +441,9 @@ index 2e457bad9928..cc054449d35d 100644
 -        _core._server_trust_levels[key] = _normalize_server_trust((config or {}).get("trust"))
 +        _core._server_trust_levels[key] = _server_trust_tier(config)
          _record_cost_policy(server_name, config, key)
-         hints = _core._tool_read_only_hints.setdefault(key, {})
-         hints.update({t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)})
-@@ -103,7 +112,7 @@ def _record_scope_trust(server_name: str, config: dict, scope: str) -> None:
+         # Reconnects retain handlers even when a tool disappears from tools/list.
+         # Missing metadata must fail closed, not preserve a stale read-only hint.
+@@ -106,7 +115,7 @@ def _record_scope_trust(server_name: str, config: dict, scope: str) -> None:
      write-capable call."""
      with _core._lock:
          key = _server_key(server_name, scope, current=False)
@@ -299,7 +453,7 @@ index 2e457bad9928..cc054449d35d 100644
  
  
 diff --git a/website/docs/reference/mcp-config-reference.md b/website/docs/reference/mcp-config-reference.md
-index 48e0c66eb135..89ea9ef51fb9 100644
+index 48e0c66eb1351..89ea9ef51fb9a 100644
 --- a/website/docs/reference/mcp-config-reference.md
 +++ b/website/docs/reference/mcp-config-reference.md
 @@ -69,7 +69,8 @@ mcp_servers:
@@ -313,10 +467,10 @@ index 48e0c66eb135..89ea9ef51fb9 100644
  | `spend_limit` | number | both | Per-chat budget for this server's costed tools (`0`/absent = no limit). A costed call that would take the chat past it asks first, even on a `trust: full` server, and is refused where nobody can answer (cron, `chat -q`) |
  | `cost_unit` | string | both | Label shown with costs and totals (default: `credits`) |
 diff --git a/website/docs/user-guide/security.md b/website/docs/user-guide/security.md
-index 8a07e2f74824..0120c8bce223 100644
+index 74c56ddb56ddc..2dcf5fd3858d1 100644
 --- a/website/docs/user-guide/security.md
 +++ b/website/docs/user-guide/security.md
-@@ -95,6 +95,7 @@ YOLO mode disables **all** dangerous command safety checks for the session — *
+@@ -96,6 +96,7 @@ YOLO mode disables **all** dangerous command safety checks for the session — *
  YOLO and `approvals.mode: off` also skip the [`trust: untrusted`](../reference/mcp-config-reference.md) MCP prompt: a write-capable tool on an untrusted server runs without asking, with each source's usual reach. `/yolo` covers only the chat it was typed in (another chat is still asked); `--yolo` and `HERMES_YOLO_MODE` cover the sessions of the Hermes process they were given to; `approvals.mode: off` covers every chat and cron job of that profile. They do **not** skip:
  
  - **An MCP server's spend limit.** A call that would take the chat past a declared [`spend_limit`](./features/mcp.md#tool-costs-and-spend-limits) still asks, and where nobody can answer (a cron job, `hermes chat -q`) it is refused. The limit is a budget you set, not a safety prompt.
