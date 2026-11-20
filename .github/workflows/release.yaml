@@ -13,12 +13,21 @@ jobs:
   image:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       packages: write
     steps:
+      # GITHUB_TOKEN may not push the tag once main has changed a workflow file since this commit.
+      - name: Generate token
+        id: app-token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
+        with:
+          app-id: ${{ secrets.RENOVATE_APP_ID }}
+          private-key: ${{ secrets.RENOVATE_PRIVATE_KEY }}
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Next tag from the base image and the build count
         id: tag
@@ -66,7 +75,7 @@ jobs:
       - name: Tag and GitHub release
         if: steps.tag.outputs.tag
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TAG: ${{ steps.tag.outputs.tag }}
           BASE: ${{ steps.tag.outputs.base }}
         run: |
