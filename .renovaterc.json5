@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>alexander-zimmermann/.github//.renovate/sidecarBase.json5#v1.0.1"],
+  "extends": ["github>alexander-zimmermann/.github//.renovate/sidecarBase.json5#v1.0.2"],
   "packageRules": [
     {
       // A Hermes release merges itself once CI shows every patch still applies; lares reviews the bump of this image.
