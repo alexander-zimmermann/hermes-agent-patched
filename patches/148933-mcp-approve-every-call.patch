@@ -2,14 +2,14 @@ Upstream: https://github.com/NousResearch/hermes-agent/pull/148933
 
 diff --git a/contributors/emails/alexander@zimmermann.eu.com b/contributors/emails/alexander@zimmermann.eu.com
 new file mode 100644
-index 0000000000000..68bb810f3eb51
+index 000000000000..68bb810f3eb5
 --- /dev/null
 +++ b/contributors/emails/alexander@zimmermann.eu.com
 @@ -0,0 +1,2 @@
 +alexander-zimmermann
 +# mcp: approve_every_call asks before every write-capable call
 diff --git a/tests/tools/test_approval_gateway_wait_coalesce_race.py b/tests/tools/test_approval_gateway_wait_coalesce_race.py
-index 8c0c11aed5a27..f0df917fca2c1 100644
+index 8c0c11aed5a2..f0df917fca2c 100644
 --- a/tests/tools/test_approval_gateway_wait_coalesce_race.py
 +++ b/tests/tools/test_approval_gateway_wait_coalesce_race.py
 @@ -7,6 +7,8 @@
@@ -64,7 +64,7 @@ index 8c0c11aed5a27..f0df917fca2c1 100644
 +        thread.join(10)
 +    assert sorted(r["choice"] for r in results) == sorted([choice, "once"])
 diff --git a/tests/tools/test_mcp_trust_approval_scope.py b/tests/tools/test_mcp_trust_approval_scope.py
-index d0afb699fd312..6d771d0779214 100644
+index d0afb699fd31..6d771d077921 100644
 --- a/tests/tools/test_mcp_trust_approval_scope.py
 +++ b/tests/tools/test_mcp_trust_approval_scope.py
 @@ -13,6 +13,7 @@
@@ -99,7 +99,7 @@ index d0afb699fd312..6d771d0779214 100644
      """Elicitation-style consent: the card offers Once / Deny, the CLI panel is asked for once/deny,
      and a stale broader answer approves this call without remembering anything."""
 diff --git a/tests/tools/test_mcp_trust_gate_rediscovery.py b/tests/tools/test_mcp_trust_gate_rediscovery.py
-index 4b3562d5c1a02..0bac292592788 100644
+index 4b3562d5c1a0..0bac29259278 100644
 --- a/tests/tools/test_mcp_trust_gate_rediscovery.py
 +++ b/tests/tools/test_mcp_trust_gate_rediscovery.py
 @@ -314,3 +314,27 @@ def test_session_expired_replay_runs_when_the_user_already_granted_the_tool():
@@ -131,7 +131,7 @@ index 4b3562d5c1a02..0bac292592788 100644
 +    assert "NOT run without approval" in result["error"] and asked == []
 +    old.call_tool.assert_awaited_once()
 diff --git a/tests/tools/test_mcp_trust_missing_record.py b/tests/tools/test_mcp_trust_missing_record.py
-index 5e55edac572a9..545c6547f534e 100644
+index 5e55edac572a..545c6547f534 100644
 --- a/tests/tools/test_mcp_trust_missing_record.py
 +++ b/tests/tools/test_mcp_trust_missing_record.py
 @@ -192,3 +192,11 @@ def outage(*_args, **_kwargs):
@@ -147,7 +147,7 @@ index 5e55edac572a9..545c6547f534e 100644
 +        assert _write_call_asks()
 +    session.call_tool.assert_not_awaited()
 diff --git a/tests/tools/test_mcp_trust_yolo.py b/tests/tools/test_mcp_trust_yolo.py
-index 555e3929e3c17..d549c3af9ebf0 100644
+index 555e3929e3c1..d549c3af9ebf 100644
 --- a/tests/tools/test_mcp_trust_yolo.py
 +++ b/tests/tools/test_mcp_trust_yolo.py
 @@ -3,7 +3,8 @@
@@ -197,7 +197,7 @@ index 555e3929e3c17..d549c3af9ebf0 100644
      _register(PAID)
      approval.enable_session_yolo("tg:yolo")
 diff --git a/tools/approval_gateway_wait.py b/tools/approval_gateway_wait.py
-index 13a383ada3860..fa0ca21b274af 100644
+index 13a383ada386..fa0ca21b274a 100644
 --- a/tools/approval_gateway_wait.py
 +++ b/tools/approval_gateway_wait.py
 @@ -135,8 +135,9 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
@@ -222,10 +222,10 @@ index 13a383ada3860..fa0ca21b274af 100644
          return None
      extra = {"cancelled": cancelled} if cancelled else {}
 diff --git a/tools/mcp_tool.py b/tools/mcp_tool.py
-index 8597983abd25e..aee69377618d9 100644
+index e7e0634b633d..6118e8b55bc2 100644
 --- a/tools/mcp_tool.py
 +++ b/tools/mcp_tool.py
-@@ -564,13 +564,15 @@ def __init__(self, name: str):
+@@ -575,13 +575,15 @@ def __init__(self, name: str):
  # mutation, prompt cache intact. ``_server_trust_levels`` is keyed by the CONSUMING profile's own
  # key (its policy for the name, even when it adopted another profile's connection);
  # ``_tool_read_only_hints`` by the connection key (the server's own tool annotations).
@@ -243,7 +243,7 @@ index 8597983abd25e..aee69377618d9 100644
  
  def _bump_server_error(server_name: str, *, application: bool = False) -> None:
 diff --git a/tools/mcp_tool_handlers.py b/tools/mcp_tool_handlers.py
-index 46dda77323f17..929878e00145c 100644
+index c3c9c94a38c6..404ede8a30a9 100644
 --- a/tools/mcp_tool_handlers.py
 +++ b/tools/mcp_tool_handlers.py
 @@ -16,7 +16,7 @@
@@ -392,7 +392,7 @@ index 46dda77323f17..929878e00145c 100644
                         f"Approve to run '{tool_name}' {scope}, or deny to block it.")
          title = f"MCP server '{server_name}' is asking"
      else:
-@@ -859,8 +882,10 @@ def _handler(args: dict, **kwargs) -> Any:
+@@ -885,8 +908,10 @@ def _handler(args: dict, **kwargs) -> Any:
              # The session that will run the call was (re)discovered after the
              # gate ran, and it no longer reports the tool as read-only.
              # Consent must be decided against this metadata, not the cache.
@@ -405,17 +405,17 @@ index 46dda77323f17..929878e00145c 100644
                  if error is not None:
                      for charge in booked:
                          charge.refund()
-@@ -868,7 +893,7 @@ def _handler(args: dict, **kwargs) -> Any:
+@@ -894,7 +919,7 @@ def _handler(args: dict, **kwargs) -> Any:
          # Still cleared only as read-only: a reconnect (a recoverer's, or one whose tools/list is still running
          # when this call arrives) can rediscover the tool as write-capable before it runs. The grant is read on
-         # this thread (scope-bound); the hint is re-read under _rpc_lock, which every tools/list holds.
+         # this thread (scope-bound); re-check the hint after admission waits for any active tools/list.
 -        cleared_as_read_only = read_only and _untrusted(server_name)
 +        cleared_as_read_only = read_only and _gated_tier(_trust_tier(server_name))
-         from tools.mcp_tool_scope import _resolve_server_key
+         from tools.mcp_tool_scope import _resolve_server_key, _server_key
          hint_key = _resolve_server_key(server_name)
-         image_paths: list[str] = []  # the LAST attempt's cached images (a recoverer may retry _call)
+         # Policy belongs to the CALLER, not the adopted connection's owner. Resolve
 diff --git a/tools/mcp_tool_registration.py b/tools/mcp_tool_registration.py
-index c3bcb2060a8b2..46e0ecf262678 100644
+index c3bcb2060a8b..46e0ecf26267 100644
 --- a/tools/mcp_tool_registration.py
 +++ b/tools/mcp_tool_registration.py
 @@ -49,6 +49,15 @@ def _normalize_server_trust(value: Any) -> str:
@@ -453,10 +453,10 @@ index c3bcb2060a8b2..46e0ecf262678 100644
  
  
 diff --git a/website/docs/reference/mcp-config-reference.md b/website/docs/reference/mcp-config-reference.md
-index 48e0c66eb1351..89ea9ef51fb9a 100644
+index 8a5eda27f38a..cd1efffe2344 100644
 --- a/website/docs/reference/mcp-config-reference.md
 +++ b/website/docs/reference/mcp-config-reference.md
-@@ -69,7 +69,8 @@ mcp_servers:
+@@ -70,7 +70,8 @@ mcp_servers:
  | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
  | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
  | `events` | bool | both | Experimental MCP events client with webhook delivery (default: `false`). Registers `list_event_types`, `subscribe_event` and `unsubscribe_event` for this server. Needs `platforms.webhook.extra.public_url` (HTTPS) and a running gateway. Hermes refreshes subscriptions only while it is connected to the server, so with `lazy: true` or `idle_timeout_seconds` a subscription can lapse until the next connection resubscribes it. See [MCP Events](../user-guide/features/mcp.md#mcp-events-experimental) |
@@ -467,7 +467,7 @@ index 48e0c66eb1351..89ea9ef51fb9a 100644
  | `spend_limit` | number | both | Per-chat budget for this server's costed tools (`0`/absent = no limit). A costed call that would take the chat past it asks first, even on a `trust: full` server, and is refused where nobody can answer (cron, `chat -q`) |
  | `cost_unit` | string | both | Label shown with costs and totals (default: `credits`) |
 diff --git a/website/docs/user-guide/security.md b/website/docs/user-guide/security.md
-index 74c56ddb56ddc..2dcf5fd3858d1 100644
+index a2f53ee93583..c46214f49c14 100644
 --- a/website/docs/user-guide/security.md
 +++ b/website/docs/user-guide/security.md
 @@ -96,6 +96,7 @@ YOLO mode disables **all** dangerous command safety checks for the session — *
